@@ -1,4 +1,5 @@
-const {ipcRenderer, remote} = require('electron')
+const {ipcRenderer} = require('electron')
+const remote = require('@electron/remote')
 const BackgroundView = require('./background-view')
 const CharactersView = require('./characters-view.js')
 const CharacterTrainerView = require('./character-trainer-view.js')
@@ -245,7 +246,11 @@ function updateView() {
 function addCharacter(record) {
   knex('Characters').returning('id').insert(record)
     .then((result) => {
+      // Knex 3.0 with better-sqlite3 returns [{id: 1}] instead of [1]
       let newID = result && result[0]
+      if (typeof newID === 'object' && newID !== null && newID.id !== undefined) {
+        newID = newID.id
+      }
       record.id = newID
       characters.push(record)
       
@@ -324,10 +329,13 @@ function handleBattleUpdate(battleOutcome) {
 }
 
 /**
- * 
- * @param {String} characterID 
+ *
+ * @param {String} characterID
  */
 function getCharacterValues(characterID) {
+  if (characterID === undefined || characterID === null) {
+    return Promise.resolve([])
+  }
   characterID = characterID.toString()
   if(characterValues[characterID]) {
     return Promise.resolve(characterValues[characterID])
@@ -351,10 +359,13 @@ function getCharacterValues(characterID) {
 }
 
 /**
- * 
- * @param {String} characterID 
+ *
+ * @param {String} characterID
  */
 function getCharacterValuesMap(characterID) {
+  if (characterID === undefined || characterID === null) {
+    return Promise.resolve({})
+  }
   characterID = characterID.toString()
   if(characterValuesMap[characterID]) {
     return Promise.resolve(characterValuesMap[characterID])

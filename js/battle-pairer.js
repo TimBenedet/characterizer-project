@@ -1,5 +1,5 @@
 const EventEmitter = require('events').EventEmitter
-const {remote} = require('electron')
+const remote = require('@electron/remote')
 const knex = remote.getGlobal('knex')
 const MIN_BATTTLE_COUNT = 2
 const TOP_PERCENT_CUTOFF = .1

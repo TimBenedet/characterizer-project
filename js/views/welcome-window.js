@@ -1,6 +1,7 @@
-const {ipcRenderer, shell, remote} = require('electron')
+const {ipcRenderer, shell} = require('electron')
+const remote = require('@electron/remote')
 const knex = remote.getGlobal('knex')
-const prefsModule = require('electron').remote.require('./js/prefs.js')
+const prefsModule = remote.require('./js/prefs.js')
 const fs = require('fs')
 
 let container = document.getElementById("container")

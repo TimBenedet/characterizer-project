@@ -2,21 +2,41 @@ const {app, ipcMain, BrowserWindow, dialog} = require('electron')
 const path = require('path')
 const url = require('url')
 const fs = require('fs')
-const userDataPath = app.getPath('userData')
 const valuesSeedDataPath = path.join(__dirname, "data", "values.txt")
 const {seedDB} = require('./js/database-init.js')
 const prefModule = require('./js/prefs.js')
 const utils = require('./js/utils.js')
 const trash = require('trash')
 const autoUpdater = require('./auto-updater')
-const isDev = require('electron-is-dev')
+const remoteMain = require('@electron/remote/main')
+
+// Detect dev mode - app.isPackaged is available only after app is ready in some versions
+// Fallback to checking if we're in an asar archive
+let isDev = true
+try {
+  isDev = !require.main.filename.includes('app.asar')
+} catch (e) {
+  isDev = true
+}
 
 let welcomeWindow
 let loadingStatusWindow
 let mainWindow
 
+// Default webPreferences for security
+const defaultWebPreferences = {
+  nodeIntegration: true,
+  contextIsolation: false,
+  enableRemoteModule: false
+}
+
 function createWelcomeWindow () {
-  welcomeWindow = new BrowserWindow({width: 800, height: 600})
+  welcomeWindow = new BrowserWindow({
+    width: 800,
+    height: 600,
+    webPreferences: defaultWebPreferences
+  })
+  remoteMain.enable(welcomeWindow.webContents)
   welcomeWindow.loadURL(url.format({
     pathname: path.join(__dirname, 'welcome-window.html'),
     title: "Characterizer",
@@ -33,7 +53,10 @@ function createWelcomeWindow () {
   }
 }
 
-app.on('ready', createWelcomeWindow)
+app.on('ready', () => {
+  remoteMain.initialize()
+  createWelcomeWindow()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -50,22 +73,23 @@ ipcMain.on('browse-for-project', (e, arg)=> {
   browseForProject()
 })
 
-function browseForProject() {
-  let properties = {
-    title:"Open Script", 
-    filters:[
+async function browseForProject() {
+  const properties = {
+    title: "Open Script",
+    filters: [
       {
-        name: 'Database File', 
+        name: 'Database File',
         extensions: ['sqlite']
       }
-    ]
+    ],
+    properties: ['openFile']
   }
-  dialog.showOpenDialog(properties, (filenames)=>{
-      if (filenames) {
-        showMainWindow(filenames[0])
-        addToRecentDocs(filenames[0])
-      }
-  })
+
+  const { canceled, filePaths } = await dialog.showOpenDialog(properties)
+  if (!canceled && filePaths.length > 0) {
+    showMainWindow(filePaths[0])
+    addToRecentDocs(filePaths[0])
+  }
 }
 
 ipcMain.on('new-project', (e, arg)=> {
@@ -82,52 +106,59 @@ ipcMain.on('workspace-ready', event => {
 })
 
 
-function createNewProject() {
-  let properties = {
+async function createNewProject() {
+  const properties = {
     title: "New Project",
     buttonLabel: "Create",
   }
-  dialog.showSaveDialog(properties, filename => {
-    if(!filename) {
-      return
-    }
-    function openWindow() {
-      fs.mkdirSync(filename)      
-      let projectName = path.basename(filename)
-      let dbFileName = path.join(filename, projectName + '.sqlite')
-      showMainWindow(dbFileName)
-      addToRecentDocs(dbFileName)
-    }
 
-    if(fs.existsSync(filename)) {
-      if(fs.lstatSync(filename).isDirectory()) {
-        console.log('\ttrash existing folder', filename)
-        trash(filename)
-          .then(openWindow)
-          .catch(console.error)
-      } else {
-        dialog.showMessageBox(null, {
-          message: "Could not overwrite file " + path.basename(filename) + ". Only folders can be overwritten." 
-        })
-        return
+  const { canceled, filePath } = await dialog.showSaveDialog(properties)
+
+  if (canceled || !filePath) {
+    return
+  }
+
+  async function openWindow() {
+    fs.mkdirSync(filePath)
+    const projectName = path.basename(filePath)
+    const dbFileName = path.join(filePath, projectName + '.sqlite')
+    showMainWindow(dbFileName)
+    addToRecentDocs(dbFileName)
+  }
+
+  if (fs.existsSync(filePath)) {
+    if (fs.lstatSync(filePath).isDirectory()) {
+      console.log('\ttrash existing folder', filePath)
+      try {
+        await trash(filePath)
+        await openWindow()
+      } catch (err) {
+        console.error(err)
       }
     } else {
-      openWindow()
+      await dialog.showMessageBox({
+        message: "Could not overwrite file " + path.basename(filePath) + ". Only folders can be overwritten."
+      })
+      return
     }
-  })
+  } else {
+    await openWindow()
+  }
 }
 
 function showMainWindow(dbFile) {
-  let basename = path.basename(dbFile)
-  if(!loadingStatusWindow) {
+  const basename = path.basename(dbFile)
+  if (!loadingStatusWindow) {
     loadingStatusWindow = new BrowserWindow({
       width: 450,
       height: 150,
       backgroundColor: '#333333',
       show: false,
       frame: false,
-      resizable: false
+      resizable: false,
+      webPreferences: defaultWebPreferences
     })
+    remoteMain.enable(loadingStatusWindow.webContents)
   }
 
   loadingStatusWindow.loadURL(`file://${__dirname}/loading-status.html?name=${basename}`)
@@ -136,30 +167,37 @@ function showMainWindow(dbFile) {
   })
 
   try {
-    var knex = require('knex')({
-      client: 'sqlite3',
+    // Use better-sqlite3 with knex
+    const knex = require('knex')({
+      client: 'better-sqlite3',
       connection: {
         filename: dbFile
-      }
+      },
+      useNullAsDefault: true
     })
     global.knex = knex
 
-    let migrationsPath = path.join(__dirname, `migrations`)
+    const migrationsPath = path.join(__dirname, 'migrations')
 
+    console.log('Starting migrations from:', migrationsPath)
     knex.migrate.latest({directory: migrationsPath})
-      .then(()=> {
+      .then(() => {
+        console.log('Migrations completed, seeding DB...')
         return seedDB(knex, {valuesSeedDataPath})
       })
-      .then(()=>{
-        if(mainWindow) {
+      .then(() => {
+        console.log('Seeding completed, creating main window...')
+        if (mainWindow) {
           mainWindow.close()
         }
         mainWindow = new BrowserWindow({
-          width: 800, 
-          height: 600, 
+          width: 800,
+          height: 600,
           show: false,
           title: basename,
+          webPreferences: defaultWebPreferences
         })
+        remoteMain.enable(mainWindow.webContents)
         mainWindow.loadURL(url.format({
           pathname: path.join(__dirname, 'main-window.html'),
           protocol: 'file:',
@@ -167,24 +205,26 @@ function showMainWindow(dbFile) {
         }))
         mainWindow.on('closed', () => {
           mainWindow = null
-        })  
+        })
+        // Open DevTools for debugging
+        mainWindow.webContents.openDevTools()
       })
       .catch(error => {
+        console.error('Database error:', error)
         // The loading status window doesn't receive the message unless it's delayed a little
-        setTimeout(()=>{
+        setTimeout(() => {
           loadingStatusWindow.webContents.send('log', { type: "progress", message: error.toString()})
         }, 500)
       })
-  } catch(error) {
-    setTimeout(()=>{
+  } catch (error) {
+    setTimeout(() => {
       loadingStatusWindow.webContents.send('log', { type: "progress", message: error.toString()})
     }, 500)
   }
-
 }
 
-let addToRecentDocs = (filename, metadata={}) => {
-  let prefs = prefModule.getPrefs('add to recent')
+const addToRecentDocs = (filename, metadata = {}) => {
+  const prefs = prefModule.getPrefs('add to recent')
 
   let recentDocuments
   if (!prefs.recentDocuments) {
@@ -195,21 +235,21 @@ let addToRecentDocs = (filename, metadata={}) => {
 
   let currPos = 0
 
-  for (var document of recentDocuments) {
-    if (document.filename == filename) {
+  for (const document of recentDocuments) {
+    if (document.filename === filename) {
       recentDocuments.splice(currPos, 1)
       break
     }
     currPos++
   }
 
-  let recentDocument = metadata
+  const recentDocument = metadata
 
   if (!recentDocument.title) {
     let title = filename.split(path.sep)
-    title = title[title.length-1]
+    title = title[title.length - 1]
     title = title.split('.')
-    title.splice(-1,1)
+    title.splice(-1, 1)
     title = title.join('.')
     recentDocument.title = title
   }
@@ -220,7 +260,7 @@ let addToRecentDocs = (filename, metadata={}) => {
   // save
   prefModule.set('recentDocuments', recentDocuments)
 
-  if(welcomeWindow) {
+  if (welcomeWindow) {
     welcomeWindow.webContents.send('update-recent-documents')
   }
 }

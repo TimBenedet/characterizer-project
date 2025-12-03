@@ -2,7 +2,8 @@ const MainBaseView = require('./main-base-view.js')
 const FavoriteButton = require('./favorite-button.js')
 const BattleTimeKeeper = require('../battle-timekeeper.js')
 const { getFriendlyMS } = require('../utils.js')
-const prefsModule = require('electron').remote.require('./js/prefs')
+const remote = require('@electron/remote')
+const prefsModule = remote.require('./js/prefs')
 const EXPIRE_TIME = prefsModule.getPrefs()['skipTimerLength'] || 10*1000
 
 module.exports = class CharacterTrainerView extends MainBaseView {

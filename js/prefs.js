@@ -6,8 +6,15 @@ const os = require("os");
 const pkg = require('../package.json')
 const util = require('./utils.js') // for Object.equals
 
-// TODO pref specifics shouldnt be in this module.
-const prefFile = path.join(app.getPath('userData'), 'characterizer-preferences.json')
+// Defer path resolution until app is ready
+let prefFile = null
+
+const getPrefFile = () => {
+  if (!prefFile) {
+    prefFile = path.join(app.getPath('userData'), 'characterizer-preferences.json')
+  }
+  return prefFile
+}
 
 const defaultPrefs = {
   version: pkg.version,
@@ -20,7 +27,7 @@ const load = () => {
   try {
     // load existing prefs
     // console.log("READING FROM DISK")
-    prefs = JSON.parse(fs.readFileSync(prefFile))
+    prefs = JSON.parse(fs.readFileSync(getPrefFile()))
   } catch (e) {
     prefs = defaultPrefs
     try {
@@ -39,7 +46,7 @@ const savePrefs = (newPref) => {
   } else {
     prefs = newPref
     // console.log("SAVING TO DISK")
-    fs.writeFileSync(prefFile, JSON.stringify(newPref, null, 2))
+    fs.writeFileSync(getPrefFile(), JSON.stringify(newPref, null, 2))
   }
 }
 
@@ -63,9 +70,9 @@ const set = (keyPath, value, sync) => {
     console.log("SAVING TO DISK")
     console.log(prefs)
     if (sync) {
-      fs.writeFileSync(prefFile, JSON.stringify(prefs, null, 2))
+      fs.writeFileSync(getPrefFile(), JSON.stringify(prefs, null, 2))
     } else {
-      fs.writeFile(prefFile, JSON.stringify(prefs, null, 2), (err) => {
+      fs.writeFile(getPrefFile(), JSON.stringify(prefs, null, 2), (err) => {
         console.log("SAVED ASYNC")
       })
     }
@@ -74,6 +81,10 @@ const set = (keyPath, value, sync) => {
 
 const getPrefs = (from) => {
   // console.log("GETTING PREFS!!!", from)
+  // Lazy initialization - only load prefs when first accessed
+  if (!prefs) {
+    init()
+  }
   return prefs
 }
 
@@ -90,8 +101,6 @@ const init = () => {
     savePrefs(prefs)
   }
 }
-
-init()
 
 module.exports = {
   savePrefs,
